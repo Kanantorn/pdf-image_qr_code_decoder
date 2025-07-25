@@ -9,3 +9,25 @@ export interface DecodedFileResult {
   qrs: DecodedQR[];
   error?: string;
 }
+
+export interface QRGenerationData {
+  type: 'text' | 'url' | 'email' | 'phone' | 'wifi';
+  content: string;
+  displayName?: string;
+}
+
+export interface WiFiCredentials {
+  ssid: string;
+  password: string;
+  security: 'WPA' | 'WEP' | 'nopass';
+  hidden: boolean;
+}
+
+export interface GeneratedQR {
+  id: string;
+  type: 'text' | 'url' | 'email' | 'phone' | 'wifi';
+  data: string;
+  displayName: string;
+  qrDataUrl: string;
+  createdAt: Date;
+}

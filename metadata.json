@@ -1,6 +1,6 @@
 {
-  "name": "PDF & Image QR Code Decoder",
-  "description": "An application to upload PDF and image files to decode any QR codes found within them. The app supports bulk uploads and displays the decoded data for each found QR code.",
+  "name": "PDF & Image QR Code Tools",
+  "description": "A comprehensive application to decode QR codes from PDF and image files, and generate new QR codes for text, URLs, emails, phone numbers, and Wi-Fi credentials. Features bulk uploads, advanced scanning, and privacy-focused client-side processing.",
   "requestFramePermissions": [],
   "prompt": ""
 }
