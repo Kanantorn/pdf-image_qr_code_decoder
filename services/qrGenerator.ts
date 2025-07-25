@@ -1,7 +1,15 @@
 import QRCode from 'qrcode';
 import { QRGenerationData, WiFiCredentials, GeneratedQR } from '../types';
 
-export const generateQRCode = async (data: QRGenerationData): Promise<string> => {
+interface QRSettings {
+  foregroundColor?: string;
+  backgroundColor?: string;
+  size?: number;
+  margin?: number;
+  errorCorrectionLevel?: 'L' | 'M' | 'Q' | 'H';
+}
+
+export const generateQRCode = async (data: QRGenerationData, settings?: QRSettings): Promise<string> => {
   let qrData = '';
   
   switch (data.type) {
@@ -34,13 +42,13 @@ export const generateQRCode = async (data: QRGenerationData): Promise<string> =>
 
   try {
     const qrDataUrl = await QRCode.toDataURL(qrData, {
-      width: 256,
-      margin: 2,
+      width: settings?.size || 256,
+      margin: settings?.margin || 2,
       color: {
-        dark: '#000000',
-        light: '#FFFFFF'
+        dark: settings?.foregroundColor || '#000000',
+        light: settings?.backgroundColor || '#FFFFFF'
       },
-      errorCorrectionLevel: 'M'
+      errorCorrectionLevel: settings?.errorCorrectionLevel || 'M'
     });
     return qrDataUrl;
   } catch (error) {
@@ -48,8 +56,8 @@ export const generateQRCode = async (data: QRGenerationData): Promise<string> =>
   }
 };
 
-export const createGeneratedQR = async (data: QRGenerationData): Promise<GeneratedQR> => {
-  const qrDataUrl = await generateQRCode(data);
+export const createGeneratedQR = async (data: QRGenerationData, settings?: QRSettings): Promise<GeneratedQR> => {
+  const qrDataUrl = await generateQRCode(data, settings);
   
   return {
     id: crypto.randomUUID(),

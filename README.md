@@ -12,11 +12,19 @@ This is a comprehensive client-side web application that allows you to both deco
 - **Smart Data Display:** Automatically formats common QR code data (URLs, emails, phone numbers, Wi-Fi credentials) into interactive elements.
 - **Export Results:** Download all decoded QR code data as a CSV file.
 
-### QR Code Generator
-- **Generate QR Codes:** Create QR codes for text, URLs, email addresses, phone numbers, and Wi-Fi credentials.
+### Enhanced QR Code Generator
+- **Real-time Generation:** QR codes are generated instantly as you type, providing immediate visual feedback.
+- **Advanced Customization:** Full control over QR code appearance including:
+  - **Custom Colors:** Choose foreground and background colors with color picker and hex input
+  - **Size Options:** Multiple size presets (256x256 to 1024x1024)
+  - **Quality Settings:** Adjustable quality levels from low to high
+  - **Margin Control:** Fine-tune spacing around the QR code
 - **Multiple Data Types:** Support for plain text, website links, email addresses, phone numbers, and Wi-Fi network credentials.
+- **Modern UI:** Split-panel interface with live preview similar to professional design tools.
+- **Enhanced Wi-Fi Setup:** Advanced Wi-Fi credential configuration with security options and hidden network support.
+- **Quick Actions:** Copy QR codes to clipboard or download instantly from the preview panel.
 - **Visual QR Management:** View, organize, and manage your generated QR codes with an intuitive interface.
-- **Download & Export:** Download individual QR codes as PNG images or export all generated codes to CSV.
+- **Export Options:** Download individual QR codes as PNG images or export all generated codes to CSV.
 - **Smart Formatting:** Automatic proper formatting for different data types (e.g., adding protocols to URLs).
 
 ### General Features
