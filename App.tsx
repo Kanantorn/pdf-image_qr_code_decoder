@@ -1,10 +1,13 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
-import { DecodedFileResult } from './types';
-import { FileText, UploadCloud, Copy, Check, QrCode, Image, Download } from './components/icons';
+import { DecodedFileResult, QRGenerationData, GeneratedQR } from './types';
+import { FileText, UploadCloud, Copy, Check, QrCode, Image, Download, Plus } from './components/icons';
 import { Spinner } from './components/Spinner';
 import { exportToCsv } from './services/export';
 import { parseQRData } from './services/qrParser.tsx';
+import { QRGenerationForm } from './components/QRGenerationForm';
+import { GeneratedQRsView } from './components/GeneratedQRsView';
+import { createGeneratedQR } from './services/qrGenerator';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -14,8 +17,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 const MAX_SCANNING_DIMENSION = 4096;
 type Status = 'idle' | 'processing' | 'results';
 type ProcessingState = { total: number; current: number; currentFile: string; } | null;
+type ActiveTab = 'decoder' | 'generator';
 
 const App: React.FC = () => {
+  // Existing decoder state
   const [results, setResults] = useState<DecodedFileResult[]>([]);
   const [status, setStatus] = useState<Status>('idle');
   const [processingState, setProcessingState] = useState<ProcessingState>(null);
@@ -25,6 +30,12 @@ const App: React.FC = () => {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const startTimeRef = useRef<number>(0);
+  
+  // New generator state
+  const [activeTab, setActiveTab] = useState<ActiveTab>('decoder');
+  const [generatedQRs, setGeneratedQRs] = useState<GeneratedQR[]>([]);
+  const [showGenerationForm, setShowGenerationForm] = useState(false);
+  const [copiedGeneratedId, setCopiedGeneratedId] = useState<string | null>(null);
 
   useEffect(() => {
     // Create worker on mount
@@ -190,6 +201,28 @@ const App: React.FC = () => {
     exportToCsv(results);
   };
 
+  // QR Generation handlers
+  const handleGenerateQR = async (data: QRGenerationData) => {
+    try {
+      const generatedQR = await createGeneratedQR(data);
+      setGeneratedQRs(prev => [generatedQR, ...prev]);
+      setShowGenerationForm(false);
+    } catch (error) {
+      console.error('Failed to generate QR code:', error);
+      // You could add error state here if needed
+    }
+  };
+
+  const handleDeleteGeneratedQR = (id: string) => {
+    setGeneratedQRs(prev => prev.filter(qr => qr.id !== id));
+  };
+
+  const handleCopyGeneratedQR = (data: string, id: string) => {
+    navigator.clipboard.writeText(data);
+    setCopiedGeneratedId(id);
+    setTimeout(() => setCopiedGeneratedId(null), 2000);
+  };
+
   const renderContent = () => {
     switch (status) {
       case 'processing':
@@ -317,22 +350,79 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-900 font-sans flex flex-col items-center justify-center p-4">
-      <div className="w-full max-w-2xl mx-auto">
+      <div className="w-full max-w-6xl mx-auto">
         <header className="text-center mb-8">
             <h1 className="text-4xl font-extrabold tracking-tight text-white sm:text-5xl md:text-6xl">
-                PDF & Image <span className="text-indigo-400">QR Decoder</span>
+                PDF & Image <span className="text-indigo-400">QR Tools</span>
             </h1>
-            <p className="mt-3 max-w-md mx-auto text-base text-slate-400 sm:text-lg md:mt-5 md:text-xl md:max-w-3xl">
-                Instantly find and decode QR codes from PDF and image files.
+            <p className="mt-3 max-w-2xl mx-auto text-base text-slate-400 sm:text-lg md:mt-5 md:text-xl">
+                Decode QR codes from files and generate new QR codes for your content.
             </p>
         </header>
+
+        {/* Tab Navigation */}
+        <div className="flex justify-center mb-8">
+          <div className="bg-slate-800/50 rounded-lg p-1 border border-slate-700">
+            <button
+              onClick={() => setActiveTab('decoder')}
+              className={`px-6 py-2 rounded-md font-medium transition-all ${
+                activeTab === 'decoder'
+                  ? 'bg-indigo-600 text-white shadow-lg'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              QR Decoder
+            </button>
+            <button
+              onClick={() => setActiveTab('generator')}
+              className={`px-6 py-2 rounded-md font-medium transition-all ${
+                activeTab === 'generator'
+                  ? 'bg-indigo-600 text-white shadow-lg'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              QR Generator
+            </button>
+          </div>
+        </div>
+
         <main className="bg-slate-800/50 rounded-xl shadow-2xl p-6 sm:p-8 border border-slate-700 backdrop-blur-sm">
-          {renderContent()}
+          {activeTab === 'decoder' ? (
+            renderContent()
+          ) : (
+            <div>
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold text-indigo-400">QR Code Generator</h2>
+                <button
+                  onClick={() => setShowGenerationForm(true)}
+                  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
+                >
+                  <Plus className="w-5 h-5" />
+                  Generate QR Code
+                </button>
+              </div>
+              <GeneratedQRsView
+                qrs={generatedQRs}
+                onDelete={handleDeleteGeneratedQR}
+                copiedId={copiedGeneratedId}
+                onCopy={handleCopyGeneratedQR}
+              />
+            </div>
+          )}
         </main>
+        
         <footer className="text-center mt-8 text-sm text-slate-500">
             <p>Your files are processed entirely in your browser and are never uploaded to a server.</p>
         </footer>
       </div>
+
+      {/* QR Generation Form Modal */}
+      {showGenerationForm && (
+        <QRGenerationForm
+          onGenerate={handleGenerateQR}
+          onClose={() => setShowGenerationForm(false)}
+        />
+      )}
     </div>
   );
 };
