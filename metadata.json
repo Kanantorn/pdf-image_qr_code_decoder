@@ -1,0 +1,6 @@
+{
+  "name": "PDF & Image QR Code Decoder",
+  "description": "An application to upload PDF and image files to decode any QR codes found within them. The app supports bulk uploads and displays the decoded data for each found QR code.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
