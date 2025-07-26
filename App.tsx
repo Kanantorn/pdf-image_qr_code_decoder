@@ -387,6 +387,9 @@ const App: React.FC = () => {
   const renderProcessingStatus = () => {
     if (status !== 'processing' || !processingState) return null;
 
+    const currentQRCount = results.reduce((sum, r) => sum + r.qrs.length, 0);
+    const successfulCount = results.filter(r => r.status === 'success').length;
+
     return (
       <div className="text-center space-y-6">
         <div className="flex items-center justify-center space-x-3">
@@ -422,21 +425,21 @@ const App: React.FC = () => {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
           <div className="bg-slate-800/50 rounded-lg p-3">
             <div className="text-lg font-bold text-indigo-400">
-              {results.reduce((sum, r) => sum + r.qrs.length, 0)}
+              {currentQRCount}
             </div>
             <div className="text-xs text-slate-500">QR Codes Found</div>
           </div>
           <div className="bg-slate-800/50 rounded-lg p-3">
             <div className="text-lg font-bold text-green-400">
-              {results.filter(r => r.status === 'success').length}
+              {successfulCount}
             </div>
             <div className="text-xs text-slate-500">Successful Scans</div>
           </div>
           <div className="bg-slate-800/50 rounded-lg p-3">
             <div className="text-lg font-bold text-yellow-400">
-              {processingState.totalPages || 0}
+              {processingState.currentPage || 0}
             </div>
-            <div className="text-xs text-slate-500">Pages Processed</div>
+            <div className="text-xs text-slate-500">Current Page</div>
           </div>
           <div className="bg-slate-800/50 rounded-lg p-3">
             <div className="text-lg font-bold text-purple-400">
@@ -451,10 +454,28 @@ const App: React.FC = () => {
 
   // Enhanced results display with metrics
   const renderResults = () => {
-    if (status !== 'results' || results.length === 0) return null;
+    if (status !== 'results') return null;
+
+    // Handle empty results case
+    if (results.length === 0) {
+      return (
+        <div className="text-center py-12">
+          <div className="text-6xl mb-4">🔍</div>
+          <h3 className="text-xl font-semibold text-white mb-2">No Results</h3>
+          <p className="text-slate-400 mb-6">No files were processed. Please try uploading some files.</p>
+          <button
+            onClick={resetState}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg transition-colors"
+          >
+            Upload Files
+          </button>
+        </div>
+      );
+    }
 
     const totalQRs = results.reduce((sum, file) => sum + file.qrs.length, 0);
     const successfulFiles = results.filter(file => file.status === 'success').length;
+    const totalFiles = results.length;
 
     return (
       <div className="space-y-6">
@@ -467,11 +488,11 @@ const App: React.FC = () => {
             </h3>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
               <div className="text-center">
-                <div className="text-2xl font-bold text-indigo-400">{processingMetrics.filesProcessed}</div>
+                <div className="text-2xl font-bold text-indigo-400">{totalFiles}</div>
                 <div className="text-xs text-slate-400">Files Processed</div>
               </div>
               <div className="text-center">
-                <div className="text-2xl font-bold text-green-400">{processingMetrics.pagesProcessed}</div>
+                <div className="text-2xl font-bold text-green-400">{processingMetrics.pagesProcessed || 0}</div>
                 <div className="text-xs text-slate-400">Pages Scanned</div>
               </div>
               <div className="text-center">
@@ -501,17 +522,19 @@ const App: React.FC = () => {
               Detection Results
             </h2>
             <p className="text-slate-400">
-              Found {totalQRs} QR codes in {successfulFiles} files • {elapsedTime}s processing time
+              Found {totalQRs} QR code{totalQRs !== 1 ? 's' : ''} in {successfulFiles} of {totalFiles} file{totalFiles !== 1 ? 's' : ''} • {elapsedTime}s processing time
             </p>
           </div>
           <div className="flex gap-2">
-            <button
-              onClick={handleExport}
-              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition-colors"
-            >
-              <Download className="w-4 h-4" />
-              Export CSV
-            </button>
+            {totalQRs > 0 && (
+              <button
+                onClick={handleExport}
+                className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                Export CSV
+              </button>
+            )}
             <button
               onClick={resetState}
               className="flex items-center gap-2 bg-slate-600 hover:bg-slate-700 text-white px-4 py-2 rounded-lg transition-colors"
@@ -522,65 +545,105 @@ const App: React.FC = () => {
         </div>
 
         {/* Results List */}
-        <div className="space-y-4">
-          {results.map((result, fileIndex) => (
-            <div key={fileIndex} className="bg-slate-800 rounded-lg p-6 border border-slate-700">
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className={`w-3 h-3 rounded-full ${
-                    result.status === 'success' ? 'bg-green-500' :
-                    result.status === 'no_qr_found' ? 'bg-yellow-500' : 'bg-red-500'
-                  }`}></div>
-                  <div>
-                    <h3 className="font-semibold text-white">{result.fileName}</h3>
-                    <p className="text-sm text-slate-400">
-                      {result.status === 'success' ? `${result.qrs.length} QR code(s) found` :
-                       result.status === 'no_qr_found' ? 'No QR codes detected' :
-                       `Error: ${result.error}`}
+        <div className="space-y-4 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">
+          {results.map((result, fileIndex) => {
+            // Skip individual page results - they should be merged into parent PDF
+            if (result.pageNumber && result.parentFileName) {
+              return null;
+            }
+
+            // Create a unique key that won't conflict
+            const uniqueKey = `result-${result.fileName}-${fileIndex}-${result.qrs.length}`;
+
+            return (
+              <div key={uniqueKey} className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-3 h-3 rounded-full ${
+                      result.status === 'success' ? 'bg-green-500' :
+                      result.status === 'no_qr_found' ? 'bg-yellow-500' : 'bg-red-500'
+                    }`}></div>
+                    <div>
+                      <h3 className="font-semibold text-white break-words">{result.fileName}</h3>
+                      <p className="text-sm text-slate-400">
+                        {result.status === 'success' ? 
+                          `${result.qrs.length} QR code${result.qrs.length !== 1 ? 's' : ''} found` :
+                         result.status === 'no_qr_found' ? 'No QR codes detected' :
+                         `Error: ${result.error || 'Unknown error'}`}
+                      </p>
+                    </div>
+                  </div>
+                  {result.qrs.length > 0 && (
+                    <div className="text-sm text-slate-500 flex-shrink-0">
+                      {result.qrs.length} code{result.qrs.length !== 1 ? 's' : ''}
+                    </div>
+                  )}
+                </div>
+
+                {result.qrs.length > 0 && (
+                  <div className="space-y-3">
+                    {result.qrs.map((qr, qrIndex) => {
+                      // Create unique key for QR codes to prevent conflicts
+                      const qrKey = `qr-${uniqueKey}-${qrIndex}-${qr.page}-${qr.data.length}`;
+                      
+                      return (
+                        <div key={qrKey} className="bg-slate-700 rounded-lg p-4">
+                          <div className="flex justify-between items-start gap-4">
+                            <div className="flex-1 min-w-0"> {/* min-w-0 for text truncation */}
+                              <div className="flex items-center gap-2 mb-2">
+                                <QrCode className="w-4 h-4 text-indigo-400 flex-shrink-0" />
+                                <span className="text-sm font-medium text-slate-300">
+                                  {result.fileName.toLowerCase().endsWith('.pdf') ? `Page ${qr.page}` : 'QR Code'}
+                                </span>
+                              </div>
+                              <div className="bg-slate-900 rounded p-3 font-mono text-sm text-slate-200 break-all">
+                                {parseQRData(qr.data)}
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => handleCopy(qr.data, fileIndex, qrIndex)}
+                              className="flex items-center gap-1 px-3 py-2 bg-slate-600 hover:bg-slate-500 text-white rounded-lg transition-colors flex-shrink-0"
+                              aria-label={`Copy QR code data from page ${qr.page}`}
+                            >
+                              {copiedInfo?.fileIndex === fileIndex && copiedInfo?.qrIndex === qrIndex ? (
+                                <><Check className="w-4 h-4" /> Copied</>
+                              ) : (
+                                <><Copy className="w-4 h-4" /> Copy</>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Show helpful message for files with no QR codes */}
+                {result.status === 'no_qr_found' && (
+                  <div className="bg-yellow-900/20 border border-yellow-500/30 rounded-lg p-3 text-center">
+                    <p className="text-yellow-200 text-sm">
+                      No QR codes were detected in this file. Make sure QR codes are clear and well-lit.
                     </p>
                   </div>
-                </div>
-                {result.qrs.length > 0 && (
-                  <div className="text-sm text-slate-500">
-                    {result.qrs.length} code{result.qrs.length !== 1 ? 's' : ''}
+                )}
+
+                {/* Show error details */}
+                {result.status === 'error' && (
+                  <div className="bg-red-900/20 border border-red-500/30 rounded-lg p-3">
+                    <p className="text-red-200 text-sm font-mono break-words">{result.error || 'Unknown error occurred'}</p>
                   </div>
                 )}
               </div>
-
-              {result.qrs.length > 0 && (
-                <div className="space-y-3">
-                  {result.qrs.map((qr, qrIndex) => (
-                    <div key={qrIndex} className="bg-slate-700 rounded-lg p-4">
-                      <div className="flex justify-between items-start gap-4">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-2">
-                            <QrCode className="w-4 h-4 text-indigo-400" />
-                            <span className="text-sm font-medium text-slate-300">
-                              Page {qr.page}
-                            </span>
-                          </div>
-                          <div className="bg-slate-900 rounded p-3 font-mono text-sm text-slate-200 break-all">
-                            {parseQRData(qr.data)}
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => handleCopy(qr.data, fileIndex, qrIndex)}
-                          className="flex items-center gap-1 px-3 py-2 bg-slate-600 hover:bg-slate-500 text-white rounded-lg transition-colors flex-shrink-0"
-                        >
-                          {copiedInfo?.fileIndex === fileIndex && copiedInfo?.qrIndex === qrIndex ? (
-                            <><Check className="w-4 h-4" /> Copied</>
-                          ) : (
-                            <><Copy className="w-4 h-4" /> Copy</>
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          }).filter(Boolean)} {/* Remove null entries */}
         </div>
+
+        {/* Show summary if no valid results */}
+        {results.filter(r => !(r.pageNumber && r.parentFileName)).length === 0 && (
+          <div className="text-center py-8">
+            <p className="text-slate-400">All results have been processed and merged.</p>
+          </div>
+        )}
       </div>
     );
   };

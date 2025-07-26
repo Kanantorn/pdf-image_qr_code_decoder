@@ -142,7 +142,7 @@ export const QRGenerationForm: React.FC<QRGenerationFormProps> = ({ onGenerate, 
         throw new Error('Unsupported QR code type');
     }
 
-    const QRCode = (await import('qrcode')).default;
+    const { default: QRCode } = await import('qrcode');
     const qrDataUrl = await QRCode.toDataURL(qrData, {
       width: settings.size,
       margin: settings.margin,
