@@ -8,6 +8,9 @@ export interface DecodedFileResult {
   status: 'success' | 'no_qr_found' | 'error';
   qrs: DecodedQR[];
   error?: string;
+  pageNumber?: number; // For PDF page identification
+  processingTime?: number; // Time taken to process this file/page
+  strategy?: string; // Processing strategy used
 }
 
 export interface QRGenerationData {

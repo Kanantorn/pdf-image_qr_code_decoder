@@ -4,13 +4,33 @@ This is a comprehensive client-side web application that allows you to both deco
 
 ## Features
 
-### QR Code Decoder
-- **Decode QR Codes:** Extract QR code data from PDF, PNG, JPG, and WEBP files.
-- **Bulk Uploads:** Process multiple files at once.
-- **Advanced Scanning:** Utilizes techniques like image binarization and multi-pass scanning to find QR codes even in complex or low-contrast images/PDFs.
-- **Responsive UI:** A smooth user experience with a non-blocking interface, even during heavy processing, thanks to Web Workers.
-- **Smart Data Display:** Automatically formats common QR code data (URLs, emails, phone numbers, Wi-Fi credentials) into interactive elements.
-- **Export Results:** Download all decoded QR code data as a CSV file.
+### Super Advanced QR Code Decoder
+- **Multi-Strategy Detection:** Employs 4 parallel detection strategies for maximum accuracy:
+  - **Multi-Scale Analysis:** Tests different image scales (0.4x to 1.5x) for optimal QR detection
+  - **Enhanced Preprocessing:** Gaussian blur, unsharp masking, adaptive histogram equalization, and morphological operations
+  - **Advanced Binarization:** Otsu's method, adaptive thresholding (Bradley-Roth), and multiple threshold values
+  - **Region-Based Scanning:** Divide-and-conquer approach with overlapping regions for comprehensive coverage
+- **Enhanced PDF Processing:** 
+  - **Adaptive Scaling:** Intelligent scaling based on page size and content density
+  - **High-DPI Rendering:** Up to 5x scale for small content and 3x for standard pages
+  - **Batch Processing:** Parallel page processing with memory management
+  - **Multi-Page Support:** Seamless handling of PDFs with hundreds of pages
+- **Advanced Image Enhancement:**
+  - **Noise Reduction:** Gaussian filtering and morphological operations
+  - **Edge Enhancement:** Unsharp masking for better QR code boundary detection
+  - **Contrast Optimization:** Adaptive histogram equalization for challenging lighting conditions
+  - **Automatic Upscaling:** Smart upscaling for small images below 2048px
+- **Performance Optimization:**
+  - **Web Workers:** Non-blocking parallel processing in background threads
+  - **Priority Queue:** Intelligent task scheduling with PDF pages prioritized
+  - **Memory Management:** Efficient resource cleanup and transferable objects
+  - **Real-time Metrics:** Processing time, strategy effectiveness, and performance analytics
+- **Comprehensive Results:** 
+  - **Page-Level Tracking:** Precise page identification for multi-page PDFs
+  - **Strategy Attribution:** Know which detection method found each QR code
+  - **Performance Metrics:** Detailed processing statistics and timing information
+  - **Smart Data Display:** Automatically formats URLs, emails, phone numbers, and Wi-Fi credentials
+- **Export & Analytics:** Download results as CSV with detailed metadata and performance metrics
 
 ### Enhanced QR Code Generator
 - **Real-time Generation:** QR codes are generated instantly as you type, providing immediate visual feedback.
