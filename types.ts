@@ -9,6 +9,7 @@ export interface DecodedFileResult {
   qrs: DecodedQR[];
   error?: string;
   pageNumber?: number; // For PDF page identification
+  parentFileName?: string; // For PDF pages, reference to parent file
   processingTime?: number; // Time taken to process this file/page
   strategy?: string; // Processing strategy used
 }
