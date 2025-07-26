@@ -15,9 +15,27 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 const MAX_SCANNING_DIMENSION = 4096;
+const OPTIMAL_SCALE = 3.0; // Increased for better QR detection
+const HIGH_DPI_SCALE = 5.0; // For high-quality scanning
+
 type Status = 'idle' | 'processing' | 'results';
-type ProcessingState = { total: number; current: number; currentFile: string; } | null;
+type ProcessingState = { 
+  total: number; 
+  current: number; 
+  currentFile: string;
+  currentPage?: number;
+  totalPages?: number;
+  strategy?: string;
+} | null;
 type ActiveTab = 'decoder' | 'generator';
+
+interface ProcessingMetrics {
+  filesProcessed: number;
+  pagesProcessed: number;
+  qrCodesFound: number;
+  averageProcessingTime: number;
+  totalProcessingTime: number;
+}
 
 const App: React.FC = () => {
   // Existing decoder state
@@ -27,9 +45,12 @@ const App: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [copiedInfo, setCopiedInfo] = useState<{fileIndex: number, qrIndex: number} | null>(null);
   const [elapsedTime, setElapsedTime] = useState(0);
+  const [processingMetrics, setProcessingMetrics] = useState<ProcessingMetrics | null>(null);
+  
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const startTimeRef = useRef<number>(0);
+  const fileProcessingStartRef = useRef<number>(0);
   
   // New generator state
   const [activeTab, setActiveTab] = useState<ActiveTab>('decoder');
@@ -42,48 +63,210 @@ const App: React.FC = () => {
     workerRef.current = new Worker(new URL('./services/qrWorker.ts', import.meta.url), { type: 'module' });
 
     const handleWorkerMessage = (event: MessageEvent) => {
-        const { type, payload } = event.data;
-        if (type === 'result') {
-            setResults(prev => [...prev, payload]);
-        } else if (type === 'complete') {
-            if (timerRef.current) clearInterval(timerRef.current);
-            setElapsedTime(Math.round((Date.now() - startTimeRef.current) / 1000));
-            setStatus('results');
-            setProcessingState(null);
-        }
+      const { type, payload } = event.data;
+      
+      switch (type) {
+        case 'result':
+          setResults(prev => {
+            // Check if this is a PDF page result and merge with existing PDF result
+            const existingIndex = prev.findIndex(r => 
+              r.fileName === payload.fileName || 
+              (payload.fileName.startsWith('PDF Page') && r.fileName.includes('.pdf'))
+            );
+            
+            if (existingIndex >= 0 && payload.fileName.startsWith('PDF Page')) {
+              // Merge PDF page results
+              const updated = [...prev];
+              updated[existingIndex] = {
+                ...updated[existingIndex],
+                qrs: [...updated[existingIndex].qrs, ...payload.qrs],
+                status: 'success'
+              };
+              return updated;
+            } else {
+              return [...prev, payload];
+            }
+          });
+          break;
+          
+        case 'progress':
+          setProcessingState(prev => prev ? {
+            ...prev,
+            currentPage: payload.currentPage,
+            totalPages: payload.total
+          } : null);
+          break;
+          
+        case 'complete':
+          if (timerRef.current) clearInterval(timerRef.current);
+          const totalTime = Date.now() - startTimeRef.current;
+          setElapsedTime(Math.round(totalTime / 1000));
+          
+          // Calculate final metrics
+          setProcessingMetrics({
+            filesProcessed: results.length,
+            pagesProcessed: payload.totalProcessed || 0,
+            qrCodesFound: results.reduce((sum, r) => sum + r.qrs.length, 0),
+            averageProcessingTime: totalTime / Math.max(results.length, 1),
+            totalProcessingTime: totalTime
+          });
+          
+          setStatus('results');
+          setProcessingState(null);
+          break;
+          
+        case 'error':
+          console.error('Worker error:', payload);
+          break;
+          
+        default:
+          console.warn('Unknown worker message type:', type);
+      }
     };
 
     workerRef.current.addEventListener('message', handleWorkerMessage);
 
-    // Cleanup on unmount
     return () => {
+      workerRef.current?.removeEventListener('message', handleWorkerMessage);
+      workerRef.current?.terminate();
       if (timerRef.current) clearInterval(timerRef.current);
-      if (workerRef.current) {
-        workerRef.current.removeEventListener('message', handleWorkerMessage);
-        workerRef.current.terminate();
-      }
     };
   }, []);
-  
-  const formatTime = (totalSeconds: number): string => {
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
 
-    const paddedMinutes = String(minutes).padStart(2, '0');
-    const paddedSeconds = String(seconds).padStart(2, '0');
+  // Enhanced PDF processing with super advanced features
+  const processEnhancedPDF = async (file: File) => {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({
+        data: arrayBuffer,
+        cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.5.136/cmaps/',
+        cMapPacked: true,
+      }).promise;
 
-    if (hours > 0) {
-      return `${String(hours).padStart(2, '0')}:${paddedMinutes}:${paddedSeconds}`;
+      const totalPages = pdf.numPages;
+      console.log(`Processing PDF: ${file.name} (${totalPages} pages)`);
+      
+      // Initialize PDF processing
+      workerRef.current?.postMessage({ 
+        type: 'setPdfPageCount', 
+        pageCount: totalPages 
+      });
+
+      // Create initial PDF result entry
+      const pdfResult: DecodedFileResult = {
+        fileName: file.name,
+        status: 'success',
+        qrs: []
+      };
+      setResults(prev => [...prev, pdfResult]);
+
+      // Process pages with adaptive scaling and enhanced rendering
+      const pageProcessingPromises = [];
+      
+      for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+        const pagePromise = pdf.getPage(pageNum).then(async (page) => {
+          try {
+            // Get page dimensions
+            const unscaledViewport = page.getViewport({ scale: 1.0 });
+            let scale = OPTIMAL_SCALE;
+
+            // Adaptive scaling based on page size and content
+            const pageArea = unscaledViewport.width * unscaledViewport.height;
+            if (pageArea > 1000000) { // Large pages
+              scale = HIGH_DPI_SCALE;
+            } else if (pageArea < 100000) { // Small pages
+              scale = HIGH_DPI_SCALE * 1.5; // Extra upscaling for small content
+            }
+
+            // Apply dimension constraints
+            let viewport = page.getViewport({ scale });
+            if (viewport.width > MAX_SCANNING_DIMENSION || viewport.height > MAX_SCANNING_DIMENSION) {
+              const constraintScale = Math.min(
+                MAX_SCANNING_DIMENSION / unscaledViewport.width,
+                MAX_SCANNING_DIMENSION / unscaledViewport.height
+              );
+              scale = Math.min(scale, constraintScale);
+              viewport = page.getViewport({ scale });
+            }
+
+            // Create high-quality canvas
+            const canvas = new OffscreenCanvas(
+              Math.floor(viewport.width),
+              Math.floor(viewport.height)
+            );
+            const context = canvas.getContext('2d');
+            if (!context) {
+              console.error(`Failed to get context for page ${pageNum}`);
+              return;
+            }
+
+            // Enhanced rendering with better quality settings
+            const renderContext = {
+              canvasContext: context as any,
+              viewport: viewport,
+              enableWebGL: false, // Disable WebGL for better compatibility
+              renderInteractiveForms: false,
+              background: 'white' // Ensure white background for better QR detection
+            };
+
+            console.log(`Rendering page ${pageNum}/${totalPages} at ${scale}x scale (${viewport.width}x${viewport.height})`);
+            
+            await page.render(renderContext).promise;
+            
+            // Get image data with enhanced quality
+            const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+            
+            // Send to worker for super advanced processing
+            workerRef.current?.postMessage({ 
+              type: 'imageData', 
+              imageData, 
+              pageNum 
+            }, [imageData.data.buffer]);
+
+            // Clean up page resources
+            page.cleanup();
+            
+          } catch (error) {
+            console.error(`Error processing page ${pageNum}:`, error);
+          }
+        });
+
+        pageProcessingPromises.push(pagePromise);
+        
+        // Process in batches to prevent memory issues
+        if (pageProcessingPromises.length >= 5) {
+          await Promise.allSettled(pageProcessingPromises.splice(0, 5));
+        }
+      }
+
+      // Process remaining pages
+      if (pageProcessingPromises.length > 0) {
+        await Promise.allSettled(pageProcessingPromises);
+      }
+
+      // Clean up PDF resources
+      await pdf.destroy();
+      
+    } catch (error) {
+      console.error(`Failed to process PDF ${file.name}:`, error);
+      const errorResult: DecodedFileResult = {
+        fileName: file.name,
+        status: 'error',
+        qrs: [],
+        error: error instanceof Error ? error.message : 'PDF processing failed'
+      };
+      setResults(prev => [...prev, errorResult]);
     }
-    return `${paddedMinutes}:${paddedSeconds}`;
   };
 
   const handleFiles = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
     startTimeRef.current = Date.now();
+    fileProcessingStartRef.current = Date.now();
     setElapsedTime(0);
+    setProcessingMetrics(null);
+    
     timerRef.current = setInterval(() => {
       setElapsedTime(Math.floor((Date.now() - startTimeRef.current) / 1000));
     }, 1000);
@@ -93,67 +276,31 @@ const App: React.FC = () => {
     const fileArray = Array.from(files);
     let filesProcessed = 0;
 
-    setProcessingState({ total: fileArray.length, current: 0, currentFile: 'Starting scan...' });
+    setProcessingState({ 
+      total: fileArray.length, 
+      current: 0, 
+      currentFile: 'Initializing advanced QR detection...',
+      strategy: 'multi-strategy-parallel'
+    });
 
     for (const file of fileArray) {
-        setProcessingState(prev => ({ ...prev!, current: filesProcessed + 1, currentFile: `Scanning: ${file.name}` }));
-        
-        if (file.type.startsWith('image/')) {
-            workerRef.current?.postMessage({ type: 'image', file });
-        } else if (file.type === 'application/pdf') {
-            try {
-                const arrayBuffer = await file.arrayBuffer();
-                const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
-                const pagePromises = [];
-
-                for (let i = 1; i <= pdf.numPages; i++) {
-                    pagePromises.push(pdf.getPage(i).then(async (page) => {
-                        let scale = 5.0;
-                        let viewport = page.getViewport({ scale });
-                        const unscaledViewport = page.getViewport({ scale: 1.0 });
-
-                        if (viewport.width > MAX_SCANNING_DIMENSION || viewport.height > MAX_SCANNING_DIMENSION) {
-                            const scaleX = MAX_SCANNING_DIMENSION / unscaledViewport.width;
-                            const scaleY = MAX_SCANNING_DIMENSION / unscaledViewport.height;
-                            scale = Math.min(scale, scaleX, scaleY);
-                            viewport = page.getViewport({ scale });
-                        }
-
-                        const canvas = document.createElement('canvas');
-                        const context = canvas.getContext('2d');
-                        canvas.width = Math.floor(viewport.width);
-                        canvas.height = Math.floor(viewport.height);
-                        if (!context) return null;
-
-                        await page.render({ canvasContext: context, viewport: viewport }).promise;
-                        const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-                        
-                        // Transferable object for performance
-                        workerRef.current?.postMessage({ type: 'imageData', imageData, pageNum: i }, [imageData.data.buffer]);
-                        page.cleanup();
-                        return true;
-                    }));
-                }
-                
-                await Promise.all(pagePromises);
-
-                if (pdf.destroy) await pdf.destroy();
-
-            } catch (e) {
-                console.error(`Failed to process PDF ${file.name}`, e);
-                const errorResult: DecodedFileResult = {
-                    fileName: file.name,
-                    status: 'error',
-                    qrs: [],
-                    error: e instanceof Error ? e.message : 'PDF processing failed'
-                };
-                setResults(prev => [...prev, errorResult]);
-            }
-        }
-        
-        filesProcessed++;
+      setProcessingState(prev => prev ? { 
+        ...prev, 
+        current: filesProcessed + 1, 
+        currentFile: `Processing: ${file.name}`,
+        strategy: file.type === 'application/pdf' ? 'enhanced-pdf-processing' : 'advanced-image-analysis'
+      } : null);
+      
+      if (file.type.startsWith('image/')) {
+        workerRef.current?.postMessage({ type: 'image', file });
+      } else if (file.type === 'application/pdf') {
+        await processEnhancedPDF(file);
+      }
+      
+      filesProcessed++;
     }
-    // This message signals the worker that all files have been processed
+
+    // Signal completion to worker
     workerRef.current?.postMessage({ type: 'allFilesSent' });
   }, []);
 
@@ -189,6 +336,7 @@ const App: React.FC = () => {
     setProcessingState(null);
     setCopiedInfo(null);
     setElapsedTime(0);
+    setProcessingMetrics(null);
   };
 
   const handleCopy = (text: string, fileIndex: number, qrIndex: number) => {
@@ -223,98 +371,232 @@ const App: React.FC = () => {
     setTimeout(() => setCopiedGeneratedId(null), 2000);
   };
 
+  // Enhanced processing status with metrics
+  const renderProcessingStatus = () => {
+    if (status !== 'processing' || !processingState) return null;
+
+    return (
+      <div className="text-center space-y-6">
+        <div className="flex items-center justify-center space-x-3">
+          <Spinner className="w-8 h-8" />
+          <div className="text-right">
+            <p className="text-lg font-semibold text-white">
+              {processingState.currentFile}
+            </p>
+            {processingState.currentPage && processingState.totalPages && (
+              <p className="text-sm text-slate-400">
+                Page {processingState.currentPage} of {processingState.totalPages}
+              </p>
+            )}
+            <p className="text-xs text-slate-500 mt-1">
+              Strategy: {processingState.strategy || 'Standard Processing'}
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-slate-800 rounded-lg p-4">
+          <div className="flex justify-between text-sm text-slate-400 mb-2">
+            <span>Files: {processingState.current} / {processingState.total}</span>
+            <span>{elapsedTime}s elapsed</span>
+          </div>
+          <div className="w-full bg-slate-700 rounded-full h-2">
+            <div 
+              className="bg-gradient-to-r from-indigo-600 to-purple-600 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${(processingState.current / processingState.total) * 100}%` }}
+            ></div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+          <div className="bg-slate-800/50 rounded-lg p-3">
+            <div className="text-lg font-bold text-indigo-400">
+              {results.reduce((sum, r) => sum + r.qrs.length, 0)}
+            </div>
+            <div className="text-xs text-slate-500">QR Codes Found</div>
+          </div>
+          <div className="bg-slate-800/50 rounded-lg p-3">
+            <div className="text-lg font-bold text-green-400">
+              {results.filter(r => r.status === 'success').length}
+            </div>
+            <div className="text-xs text-slate-500">Successful Scans</div>
+          </div>
+          <div className="bg-slate-800/50 rounded-lg p-3">
+            <div className="text-lg font-bold text-yellow-400">
+              {processingState.totalPages || 0}
+            </div>
+            <div className="text-xs text-slate-500">Pages Processed</div>
+          </div>
+          <div className="bg-slate-800/50 rounded-lg p-3">
+            <div className="text-lg font-bold text-purple-400">
+              {Math.round((processingState.current / processingState.total) * 100)}%
+            </div>
+            <div className="text-xs text-slate-500">Completion</div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Enhanced results display with metrics
+  const renderResults = () => {
+    if (status !== 'results' || results.length === 0) return null;
+
+    const totalQRs = results.reduce((sum, file) => sum + file.qrs.length, 0);
+    const successfulFiles = results.filter(file => file.status === 'success').length;
+
+    return (
+      <div className="space-y-6">
+        {/* Performance Metrics */}
+        {processingMetrics && (
+          <div className="bg-gradient-to-r from-slate-800 to-slate-700 rounded-xl p-6 border border-slate-600">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+              Processing Complete - Advanced QR Detection Report
+            </h3>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+              <div className="text-center">
+                <div className="text-2xl font-bold text-indigo-400">{processingMetrics.filesProcessed}</div>
+                <div className="text-xs text-slate-400">Files Processed</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-green-400">{processingMetrics.pagesProcessed}</div>
+                <div className="text-xs text-slate-400">Pages Scanned</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-yellow-400">{totalQRs}</div>
+                <div className="text-xs text-slate-400">QR Codes Found</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-purple-400">
+                  {(processingMetrics.totalProcessingTime / 1000).toFixed(1)}s
+                </div>
+                <div className="text-xs text-slate-400">Total Time</div>
+              </div>
+              <div className="text-center">
+                <div className="text-2xl font-bold text-blue-400">
+                  {(processingMetrics.averageProcessingTime / 1000).toFixed(1)}s
+                </div>
+                <div className="text-xs text-slate-400">Avg per File</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Results Header */}
+        <div className="flex justify-between items-center">
+          <div>
+            <h2 className="text-2xl font-bold text-white">
+              Detection Results
+            </h2>
+            <p className="text-slate-400">
+              Found {totalQRs} QR codes in {successfulFiles} files • {elapsedTime}s processing time
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={handleExport}
+              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition-colors"
+            >
+              <Download className="w-4 h-4" />
+              Export CSV
+            </button>
+            <button
+              onClick={resetState}
+              className="flex items-center gap-2 bg-slate-600 hover:bg-slate-700 text-white px-4 py-2 rounded-lg transition-colors"
+            >
+              Scan More Files
+            </button>
+          </div>
+        </div>
+
+        {/* Results List */}
+        <div className="space-y-4">
+          {results.map((result, fileIndex) => (
+            <div key={fileIndex} className="bg-slate-800 rounded-lg p-6 border border-slate-700">
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className={`w-3 h-3 rounded-full ${
+                    result.status === 'success' ? 'bg-green-500' :
+                    result.status === 'no_qr_found' ? 'bg-yellow-500' : 'bg-red-500'
+                  }`}></div>
+                  <div>
+                    <h3 className="font-semibold text-white">{result.fileName}</h3>
+                    <p className="text-sm text-slate-400">
+                      {result.status === 'success' ? `${result.qrs.length} QR code(s) found` :
+                       result.status === 'no_qr_found' ? 'No QR codes detected' :
+                       `Error: ${result.error}`}
+                    </p>
+                  </div>
+                </div>
+                {result.qrs.length > 0 && (
+                  <div className="text-sm text-slate-500">
+                    {result.qrs.length} code{result.qrs.length !== 1 ? 's' : ''}
+                  </div>
+                )}
+              </div>
+
+              {result.qrs.length > 0 && (
+                <div className="space-y-3">
+                  {result.qrs.map((qr, qrIndex) => (
+                    <div key={qrIndex} className="bg-slate-700 rounded-lg p-4">
+                      <div className="flex justify-between items-start gap-4">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-2">
+                            <QrCode className="w-4 h-4 text-indigo-400" />
+                            <span className="text-sm font-medium text-slate-300">
+                              Page {qr.page}
+                            </span>
+                          </div>
+                          <div className="bg-slate-900 rounded p-3 font-mono text-sm text-slate-200 break-all">
+                            {parseQRData(qr.data)}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleCopy(qr.data, fileIndex, qrIndex)}
+                          className="flex items-center gap-1 px-3 py-2 bg-slate-600 hover:bg-slate-500 text-white rounded-lg transition-colors flex-shrink-0"
+                        >
+                          {copiedInfo?.fileIndex === fileIndex && copiedInfo?.qrIndex === qrIndex ? (
+                            <><Check className="w-4 h-4" /> Copied</>
+                          ) : (
+                            <><Copy className="w-4 h-4" /> Copy</>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const formatTime = (totalSeconds: number): string => {
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    const paddedMinutes = String(minutes).padStart(2, '0');
+    const paddedSeconds = String(seconds).padStart(2, '0');
+
+    if (hours > 0) {
+      return `${String(hours).padStart(2, '0')}:${paddedMinutes}:${paddedSeconds}`;
+    }
+    return `${paddedMinutes}:${paddedSeconds}`;
+  };
+
   const renderContent = () => {
     switch (status) {
       case 'processing':
         return (
           <div className="text-center flex flex-col items-center justify-center h-full">
-            <Spinner />
-            {processingState && (
-                <>
-                    <p className="mt-4 text-lg text-slate-300">
-                        Processing file {processingState.current} of {processingState.total}
-                    </p>
-                    <p className="text-sm text-slate-400 truncate max-w-full px-4">{processingState.currentFile}</p>
-                </>
-            )}
-            <p className="mt-2 text-sm text-indigo-400 font-mono">
-                Elapsed Time: {formatTime(elapsedTime)}
-            </p>
+            {renderProcessingStatus()}
           </div>
         );
       case 'results':
-        const totalQRs = results.reduce((sum, r) => sum + r.qrs.length, 0);
-        const successfulFiles = results.filter(r => r.status === 'success').length;
-        return (
-          <div>
-            <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-indigo-400">Scan Complete</h2>
-                <button 
-                    onClick={handleExport}
-                    className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition-colors text-base"
-                >
-                    <Download className="w-5 h-5" />
-                    Export to CSV
-                </button>
-            </div>
-            <p className="text-center text-slate-400 mb-6">
-              Found {totalQRs} QR Code(s) in {successfulFiles} of {results.length} file(s).
-              <span className="block mt-1">Total time: {formatTime(elapsedTime)}</span>
-            </p>
-            <div className="space-y-4 max-h-[50vh] overflow-y-auto pr-2 -mr-4 custom-scrollbar">
-              {results.map((result, fileIndex) => (
-                <div key={fileIndex} className="bg-slate-900/50 rounded-lg p-4 border border-slate-700">
-                  <div className="flex items-center mb-3">
-                     {result.status === 'error' ? 
-                      <FileText className="w-5 h-5 text-red-400 mr-3 flex-shrink-0" /> :
-                      result.status === 'success' ?
-                      <QrCode className="w-5 h-5 text-green-400 mr-3 flex-shrink-0" /> :
-                      <FileText className="w-5 h-5 text-slate-500 mr-3 flex-shrink-0" />
-                    }
-                    <p className="font-semibold text-slate-100 truncate" title={result.fileName}>{result.fileName}</p>
-                  </div>
-
-                  {result.status === 'success' && (
-                    <div className="space-y-3">
-                      {result.qrs.map((qr, qrIndex) => (
-                        <div key={qrIndex} className="bg-slate-800 rounded-md p-3 border border-slate-600/50">
-                          <div className="flex justify-between items-start gap-4">
-                            <div>
-                              <p className="text-xs text-slate-400 mb-1">
-                                {result.fileName.toLowerCase().endsWith('.pdf') && qr.page > 0 ? `Found on Page ${qr.page}` : 'QR Code Data'}
-                              </p>
-                              <div className="text-slate-100 font-mono break-all text-sm">
-                                {parseQRData(qr.data)}
-                              </div>
-                            </div>
-                            <button
-                              onClick={() => handleCopy(qr.data, fileIndex, qrIndex)}
-                              className="p-2 rounded-md bg-slate-700 hover:bg-slate-600 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 flex-shrink-0"
-                              aria-label="Copy to clipboard"
-                            >
-                              {copiedInfo?.fileIndex === fileIndex && copiedInfo?.qrIndex === qrIndex 
-                                ? <Check className="w-5 h-5 text-green-400" /> 
-                                : <Copy className="w-5 h-5 text-slate-300" />}
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {result.status === 'no_qr_found' && (
-                    <p className="text-slate-400 text-center py-2 text-sm">No QR codes found in this file.</p>
-                  )}
-                  {result.status === 'error' && (
-                     <div className="bg-red-900/30 text-red-300 border border-red-500/30 rounded-md p-3 text-sm font-mono">{result.error}</div>
-                  )}
-                </div>
-              ))}
-            </div>
-            <button onClick={resetState} className="mt-8 w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition-colors text-base">
-              Scan More Files
-            </button>
-          </div>
-        );
+        return renderResults();
       case 'idle':
       default:
         return (
