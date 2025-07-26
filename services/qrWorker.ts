@@ -3,6 +3,7 @@ import jsQR from 'jsqr';
 
 const MAX_SCANNING_DIMENSION = 4096;
 const ADAPTIVE_SCALING_THRESHOLD = 2048;
+const IS_DEVELOPMENT = typeof process !== 'undefined' && process.env?.NODE_ENV === 'development';
 
 // Simplified but effective binarization
 const binarizeImageData = (imageData: ImageData, threshold: number): ImageData => {
@@ -58,7 +59,9 @@ const findAllQrCodesInImageData = async (imageData: ImageData, pageNum: number =
   const canvas = new OffscreenCanvas(imageData.width, imageData.height);
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) {
-    console.error('Could not get OffscreenCanvas context.');
+    if (IS_DEVELOPMENT) {
+      console.error('Could not get OffscreenCanvas context.');
+    }
     return [];
   }
 
@@ -119,11 +122,15 @@ const findAllQrCodesInImageData = async (imageData: ImageData, pageNum: number =
 
     const finalQRs = Array.from(allCodes).map(data => ({ data, page: pageNum }));
     
-    console.log(`QR Detection - Page ${pageNum}: Found ${finalQRs.length} codes`);
+    if (IS_DEVELOPMENT) {
+      console.log(`QR Detection - Page ${pageNum}: Found ${finalQRs.length} codes`);
+    }
     return finalQRs;
 
   } catch (error) {
-    console.error('Error in QR detection:', error);
+    if (IS_DEVELOPMENT) {
+      console.error('Error in QR detection:', error);
+    }
     return [];
   }
 };
@@ -159,7 +166,9 @@ const decodeQrFromImage = async (file: File): Promise<DecodedQR[]> => {
     return qrs;
     
   } catch (error) {
-    console.error('Error processing image:', error);
+    if (IS_DEVELOPMENT) {
+      console.error('Error processing image:', error);
+    }
     return [];
   }
 };
@@ -172,20 +181,25 @@ const processFile = async (file: File): Promise<DecodedFileResult> => {
     const qrs = await decodeQrFromImage(file);
     const processingTime = performance.now() - startTime;
     
-    console.log(`File Processing Complete: ${file.name}`, {
-      processingTime: `${processingTime.toFixed(2)}ms`,
-      qrCodesFound: qrs.length,
-      fileSize: `${(file.size / 1024).toFixed(2)}KB`
-    });
+    if (IS_DEVELOPMENT) {
+      console.log(`File Processing Complete: ${file.name}`, {
+        processingTime: `${processingTime.toFixed(2)}ms`,
+        qrCodesFound: qrs.length,
+        fileSize: `${(file.size / 1024).toFixed(2)}KB`
+      });
+    }
     
     return { 
       fileName: file.name, 
       status: qrs.length > 0 ? 'success' : 'no_qr_found', 
-      qrs 
+      qrs,
+      processingTime 
     };
   } catch (e) {
     const message = e instanceof Error ? e.message : 'An unknown error occurred.';
-    console.error(`Error processing file ${file.name}:`, message);
+    if (IS_DEVELOPMENT) {
+      console.error(`Error processing file ${file.name}:`, message);
+    }
     return { 
       fileName: file.name, 
       status: 'error', 
@@ -195,7 +209,7 @@ const processFile = async (file: File): Promise<DecodedFileResult> => {
   }
 };
 
-// Message queue handling
+// Message queue handling with improved performance
 interface QueueItem {
   type: 'image' | 'imageData';
   file?: File;
@@ -212,7 +226,7 @@ let isProcessing = false;
 let processedPages = 0;
 let totalExpectedPages = 0;
 
-const processQueue = async () => {
+const processQueue = async (): Promise<void> => {
   if (isProcessing || messageQueue.length === 0) return;
   isProcessing = true;
   
@@ -251,7 +265,9 @@ const processQueue = async () => {
       });
     }
   } catch (error) {
-    console.error('Error processing queue item:', error);
+    if (IS_DEVELOPMENT) {
+      console.error('Error processing queue item:', error);
+    }
     self.postMessage({
       type: 'error',
       payload: {
@@ -265,6 +281,7 @@ const processQueue = async () => {
   isProcessing = false;
   
   if (messageQueue.length > 0) {
+    // Use requestIdleCallback equivalent for better performance
     setTimeout(processQueue, 0);
   } else if (processingComplete) {
     self.postMessage({ type: 'complete', payload: { totalProcessed: processedPages } });
@@ -311,6 +328,8 @@ self.onmessage = async (event: MessageEvent) => {
       break;
       
     default:
-      console.warn('Unknown message type:', data.type);
+      if (IS_DEVELOPMENT) {
+        console.warn('Unknown message type:', data.type);
+      }
   }
 }; 
