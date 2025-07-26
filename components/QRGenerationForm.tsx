@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
 import { QRGenerationData, WiFiCredentials } from '../types';
 import { Type, Globe, Mail, Phone, Wifi, X, Download, Copy, Check, Eye, EyeOff } from './icons';
-import { generateQRCode } from '../services/qrGenerator';
+import { generateQRCodeWithSettings } from '../services/qrGenerator';
 
 interface QRGenerationFormProps {
   onGenerate: (data: QRGenerationData) => void;
@@ -17,7 +17,7 @@ interface QRSettings {
   quality: 'low' | 'medium' | 'high';
 }
 
-export const QRGenerationForm: React.FC<QRGenerationFormProps> = ({ onGenerate, onClose }) => {
+export const QRGenerationForm: React.FC<QRGenerationFormProps> = memo(({ onGenerate, onClose }) => {
   const [selectedType, setSelectedType] = useState<'text' | 'url' | 'email' | 'phone' | 'wifi'>('text');
   const [textContent, setTextContent] = useState('');
   const [urlContent, setUrlContent] = useState('');
@@ -47,6 +47,24 @@ export const QRGenerationForm: React.FC<QRGenerationFormProps> = ({ onGenerate, 
   });
 
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const copyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Cleanup function for timers
+  const cleanupTimers = useCallback(() => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    if (copyTimeoutRef.current) {
+      clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = null;
+    }
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return cleanupTimers;
+  }, [cleanupTimers]);
 
   const qrTypes = [
     { type: 'text' as const, label: 'Text', icon: Type, description: 'Plain text content' },
@@ -82,78 +100,29 @@ export const QRGenerationForm: React.FC<QRGenerationFormProps> = ({ onGenerate, 
         displayName: displayName.trim() || undefined
       };
 
-      // Use enhanced QR generation with custom settings
+      // Use the service function instead of duplicating code
       const qrDataUrl = await generateQRCodeWithSettings(qrData, qrSettings);
       setCurrentQRCode(qrDataUrl);
     } catch (error) {
-      console.error('Failed to generate QR preview:', error);
+      if (process.env.NODE_ENV === 'development') {
+        console.error('Failed to generate QR preview:', error);
+      }
       setCurrentQRCode('');
     } finally {
       setIsGenerating(false);
     }
   }, [selectedType, getCurrentContent, displayName, wifiCredentials, qrSettings]);
 
-  // Debounced QR generation
+  // Debounced QR generation with proper cleanup
   useEffect(() => {
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current);
-    }
-
+    cleanupTimers();
+    
     debounceTimerRef.current = setTimeout(() => {
       if (showPreview) {
         generatePreviewQR();
       }
     }, 300);
-
-    return () => {
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
-      }
-    };
-  }, [generatePreviewQR, showPreview]);
-
-  const generateQRCodeWithSettings = async (data: QRGenerationData, settings: QRSettings): Promise<string> => {
-    let qrData = '';
-    
-    switch (data.type) {
-      case 'text':
-        qrData = data.content;
-        break;
-      case 'url':
-        qrData = data.content.startsWith('http://') || data.content.startsWith('https://') 
-          ? data.content 
-          : `https://${data.content}`;
-        break;
-      case 'email':
-        qrData = `mailto:${data.content}`;
-        break;
-      case 'phone':
-        qrData = `tel:${data.content}`;
-        break;
-      case 'wifi':
-        try {
-          const wifi: WiFiCredentials = JSON.parse(data.content);
-          qrData = `WIFI:T:${wifi.security};S:${wifi.ssid};P:${wifi.password};H:${wifi.hidden ? 'true' : 'false'};;`;
-        } catch (e) {
-          throw new Error('Invalid WiFi credentials format');
-        }
-        break;
-      default:
-        throw new Error('Unsupported QR code type');
-    }
-
-    const { default: QRCode } = await import('qrcode');
-    const qrDataUrl = await QRCode.toDataURL(qrData, {
-      width: settings.size,
-      margin: settings.margin,
-      color: {
-        dark: settings.foregroundColor,
-        light: settings.backgroundColor
-      },
-      errorCorrectionLevel: settings.errorCorrectionLevel
-    });
-    return qrDataUrl;
-  };
+  }, [generatePreviewQR, showPreview, cleanupTimers]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -212,9 +181,16 @@ export const QRGenerationForm: React.FC<QRGenerationFormProps> = ({ onGenerate, 
         new ClipboardItem({ 'image/png': blob })
       ]);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      
+      // Clean up previous timeout and set new one
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+      copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
     } catch (error) {
-      console.error('Failed to copy QR code:', error);
+      if (process.env.NODE_ENV === 'development') {
+        console.error('Failed to copy QR code:', error);
+      }
     }
   };
 
@@ -540,4 +516,4 @@ export const QRGenerationForm: React.FC<QRGenerationFormProps> = ({ onGenerate, 
       </div>
     </div>
   );
-};
+});

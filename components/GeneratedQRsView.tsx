@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo, useCallback } from 'react';
 import { GeneratedQR } from '../types';
 import { downloadQRCode, exportGeneratedQRsToCSV } from '../services/qrGenerator';
 import { Download, Trash2, Copy, Check, Type, Globe, Mail, Phone, Wifi } from './icons';
@@ -10,7 +10,7 @@ interface GeneratedQRsViewProps {
   onCopy: (data: string, id: string) => void;
 }
 
-export const GeneratedQRsView: React.FC<GeneratedQRsViewProps> = ({ 
+export const GeneratedQRsView: React.FC<GeneratedQRsViewProps> = memo(({ 
   qrs, 
   onDelete, 
   copiedId, 
@@ -153,4 +153,4 @@ export const GeneratedQRsView: React.FC<GeneratedQRsViewProps> = ({
       </div>
     </div>
   );
-};
+});

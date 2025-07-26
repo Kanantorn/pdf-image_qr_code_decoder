@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo, memo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { DecodedFileResult, QRGenerationData, GeneratedQR } from './types';
 import { FileText, UploadCloud, Copy, Check, QrCode, Image, Download, Plus } from './components/icons';
@@ -17,6 +17,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 const MAX_SCANNING_DIMENSION = 4096;
 const OPTIMAL_SCALE = 3.0; // Increased for better QR detection
 const HIGH_DPI_SCALE = 5.0; // For high-quality scanning
+const IS_DEVELOPMENT = process.env.NODE_ENV === 'development';
 
 type Status = 'idle' | 'processing' | 'results';
 type ProcessingState = { 
@@ -37,6 +38,56 @@ interface ProcessingMetrics {
   totalProcessingTime: number;
 }
 
+// Memoized components for better performance
+const ProcessingStatus = memo(({ processingState, results, elapsedTime }: {
+  processingState: ProcessingState;
+  results: DecodedFileResult[];
+  elapsedTime: number;
+}) => {
+  if (!processingState) return null;
+
+  const currentQRCount = results.reduce((sum, r) => sum + r.qrs.length, 0);
+  const successfulCount = results.filter(r => r.status === 'success').length;
+
+  return (
+    <div className="text-center space-y-6">
+      <div className="flex items-center justify-center space-x-3">
+        <Spinner className="w-8 h-8" />
+        <div className="text-right">
+          <p className="text-lg font-semibold text-white">
+            {processingState.currentFile}
+          </p>
+          {processingState.currentPage && processingState.totalPages && (
+            <p className="text-sm text-slate-400">
+              Page {processingState.currentPage} of {processingState.totalPages}
+            </p>
+          )}
+          <p className="text-xs text-slate-500">
+            Strategy: {processingState.strategy || 'multi-strategy-parallel'}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 max-w-lg mx-auto">
+        <div className="bg-slate-800 rounded-lg p-4">
+          <div className="text-2xl font-bold text-indigo-400">
+            {processingState.current}/{processingState.total}
+          </div>
+          <div className="text-xs text-slate-400">Files Processed</div>
+        </div>
+        <div className="bg-slate-800 rounded-lg p-4">
+          <div className="text-2xl font-bold text-green-400">{currentQRCount}</div>
+          <div className="text-xs text-slate-400">QR Codes Found</div>
+        </div>
+      </div>
+
+      <div className="text-sm text-slate-400">
+        Processing time: {Math.floor(elapsedTime / 60)}:{String(elapsedTime % 60).padStart(2, '0')}
+      </div>
+    </div>
+  );
+});
+
 const App: React.FC = () => {
   // Existing decoder state
   const [results, setResults] = useState<DecodedFileResult[]>([]);
@@ -51,12 +102,40 @@ const App: React.FC = () => {
   const workerRef = useRef<Worker | null>(null);
   const startTimeRef = useRef<number>(0);
   const fileProcessingStartRef = useRef<number>(0);
+  const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const generatedCopiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   // New generator state
   const [activeTab, setActiveTab] = useState<ActiveTab>('decoder');
   const [generatedQRs, setGeneratedQRs] = useState<GeneratedQR[]>([]);
   const [showGenerationForm, setShowGenerationForm] = useState(false);
   const [copiedGeneratedId, setCopiedGeneratedId] = useState<string | null>(null);
+
+  // Cleanup function for all timers
+  const cleanupTimers = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (copiedTimeoutRef.current) {
+      clearTimeout(copiedTimeoutRef.current);
+      copiedTimeoutRef.current = null;
+    }
+    if (generatedCopiedTimeoutRef.current) {
+      clearTimeout(generatedCopiedTimeoutRef.current);
+      generatedCopiedTimeoutRef.current = null;
+    }
+  }, []);
+
+  // Memoized calculations for better performance
+  const resultStats = useMemo(() => {
+    const filteredResults = results.filter(r => !(r.pageNumber && r.parentFileName));
+    const totalQRs = filteredResults.reduce((sum, r) => sum + r.qrs.length, 0);
+    const successfulFiles = filteredResults.filter(r => r.status === 'success').length;
+    const totalFiles = filteredResults.length;
+    
+    return { totalQRs, successfulFiles, totalFiles, filteredResults };
+  }, [results]);
 
   useEffect(() => {
     // Create worker on mount
@@ -98,7 +177,7 @@ const App: React.FC = () => {
           break;
           
         case 'complete':
-          if (timerRef.current) clearInterval(timerRef.current);
+          cleanupTimers();
           const totalTime = Date.now() - startTimeRef.current;
           setElapsedTime(Math.round(totalTime / 1000));
           
@@ -120,7 +199,9 @@ const App: React.FC = () => {
           break;
           
         case 'error':
-          console.error('Worker error:', payload);
+          if (IS_DEVELOPMENT) {
+            console.error('Worker error:', payload);
+          }
           // Add error result to display
           setResults(prev => [...prev, {
             fileName: payload.fileName || 'Unknown File',
@@ -131,7 +212,9 @@ const App: React.FC = () => {
           break;
           
         default:
-          console.warn('Unknown worker message type:', type);
+          if (IS_DEVELOPMENT) {
+            console.warn('Unknown worker message type:', type);
+          }
       }
     };
 
@@ -140,9 +223,9 @@ const App: React.FC = () => {
     return () => {
       workerRef.current?.removeEventListener('message', handleWorkerMessage);
       workerRef.current?.terminate();
-      if (timerRef.current) clearInterval(timerRef.current);
+      cleanupTimers();
     };
-  }, []); // Keep empty dependency array but fix the stale closure issue
+  }, [cleanupTimers]);
 
   // Enhanced PDF processing with super advanced features
   const processEnhancedPDF = async (file: File) => {
@@ -155,7 +238,9 @@ const App: React.FC = () => {
       }).promise;
 
       const totalPages = pdf.numPages;
-      console.log(`Processing PDF: ${file.name} (${totalPages} pages)`);
+      if (IS_DEVELOPMENT) {
+        console.log(`Processing PDF: ${file.name} (${totalPages} pages)`);
+      }
       
       // Initialize PDF processing
       workerRef.current?.postMessage({ 
@@ -207,7 +292,9 @@ const App: React.FC = () => {
             );
             const context = canvas.getContext('2d');
             if (!context) {
-              console.error(`Failed to get context for page ${pageNum}`);
+              if (IS_DEVELOPMENT) {
+                console.error(`Failed to get context for page ${pageNum}`);
+              }
               return;
             }
 
@@ -220,7 +307,9 @@ const App: React.FC = () => {
               background: 'white' // Ensure white background for better QR detection
             };
 
-            console.log(`Rendering page ${pageNum}/${totalPages} at ${scale}x scale (${viewport.width}x${viewport.height})`);
+            if (IS_DEVELOPMENT) {
+              console.log(`Rendering page ${pageNum}/${totalPages} at ${scale}x scale (${viewport.width}x${viewport.height})`);
+            }
             
             await page.render(renderContext).promise;
             
@@ -239,7 +328,9 @@ const App: React.FC = () => {
             page.cleanup();
             
           } catch (error) {
-            console.error(`Error processing page ${pageNum}:`, error);
+            if (IS_DEVELOPMENT) {
+              console.error(`Error processing page ${pageNum}:`, error);
+            }
           }
         });
 
@@ -260,7 +351,9 @@ const App: React.FC = () => {
       await pdf.destroy();
       
     } catch (error) {
-      console.error(`Failed to process PDF ${file.name}:`, error);
+      if (IS_DEVELOPMENT) {
+        console.error(`Failed to process PDF ${file.name}:`, error);
+      }
       const errorResult: DecodedFileResult = {
         fileName: file.name,
         status: 'error',
@@ -342,7 +435,7 @@ const App: React.FC = () => {
   };
 
   const resetState = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
+    cleanupTimers();
     setStatus('idle');
     setResults([]);
     setProcessingState(null);
@@ -352,9 +445,10 @@ const App: React.FC = () => {
   };
 
   const handleCopy = (text: string, fileIndex: number, qrIndex: number) => {
+    cleanupTimers(); // Clear any existing timeout
     navigator.clipboard.writeText(text);
     setCopiedInfo({ fileIndex, qrIndex });
-    setTimeout(() => setCopiedInfo(null), 2000);
+    copiedTimeoutRef.current = setTimeout(() => setCopiedInfo(null), 2000);
   };
 
   const handleExport = () => {
@@ -368,7 +462,9 @@ const App: React.FC = () => {
       setGeneratedQRs(prev => [generatedQR, ...prev]);
       setShowGenerationForm(false);
     } catch (error) {
-      console.error('Failed to generate QR code:', error);
+      if (IS_DEVELOPMENT) {
+        console.error('Failed to generate QR code:', error);
+      }
       // You could add error state here if needed
     }
   };
@@ -378,86 +474,34 @@ const App: React.FC = () => {
   };
 
   const handleCopyGeneratedQR = (data: string, id: string) => {
+    cleanupTimers(); // Clear any existing timeout
     navigator.clipboard.writeText(data);
     setCopiedGeneratedId(id);
-    setTimeout(() => setCopiedGeneratedId(null), 2000);
+    generatedCopiedTimeoutRef.current = setTimeout(() => setCopiedGeneratedId(null), 2000);
   };
 
   // Enhanced processing status with metrics
   const renderProcessingStatus = () => {
     if (status !== 'processing' || !processingState) return null;
 
-    const currentQRCount = results.reduce((sum, r) => sum + r.qrs.length, 0);
-    const successfulCount = results.filter(r => r.status === 'success').length;
-
     return (
-      <div className="text-center space-y-6">
-        <div className="flex items-center justify-center space-x-3">
-          <Spinner className="w-8 h-8" />
-          <div className="text-right">
-            <p className="text-lg font-semibold text-white">
-              {processingState.currentFile}
-            </p>
-            {processingState.currentPage && processingState.totalPages && (
-              <p className="text-sm text-slate-400">
-                Page {processingState.currentPage} of {processingState.totalPages}
-              </p>
-            )}
-            <p className="text-xs text-slate-500 mt-1">
-              Strategy: {processingState.strategy || 'Standard Processing'}
-            </p>
-          </div>
-        </div>
-
-        <div className="bg-slate-800 rounded-lg p-4">
-          <div className="flex justify-between text-sm text-slate-400 mb-2">
-            <span>Files: {processingState.current} / {processingState.total}</span>
-            <span>{elapsedTime}s elapsed</span>
-          </div>
-          <div className="w-full bg-slate-700 rounded-full h-2">
-            <div 
-              className="bg-gradient-to-r from-indigo-600 to-purple-600 h-2 rounded-full transition-all duration-300"
-              style={{ width: `${(processingState.current / processingState.total) * 100}%` }}
-            ></div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
-          <div className="bg-slate-800/50 rounded-lg p-3">
-            <div className="text-lg font-bold text-indigo-400">
-              {currentQRCount}
-            </div>
-            <div className="text-xs text-slate-500">QR Codes Found</div>
-          </div>
-          <div className="bg-slate-800/50 rounded-lg p-3">
-            <div className="text-lg font-bold text-green-400">
-              {successfulCount}
-            </div>
-            <div className="text-xs text-slate-500">Successful Scans</div>
-          </div>
-          <div className="bg-slate-800/50 rounded-lg p-3">
-            <div className="text-lg font-bold text-yellow-400">
-              {processingState.currentPage || 0}
-            </div>
-            <div className="text-xs text-slate-500">Current Page</div>
-          </div>
-          <div className="bg-slate-800/50 rounded-lg p-3">
-            <div className="text-lg font-bold text-purple-400">
-              {Math.round((processingState.current / processingState.total) * 100)}%
-            </div>
-            <div className="text-xs text-slate-500">Completion</div>
-          </div>
-        </div>
+      <div className="text-center flex flex-col items-center justify-center h-full">
+        <ProcessingStatus 
+          processingState={processingState}
+          results={results}
+          elapsedTime={elapsedTime}
+        />
       </div>
     );
   };
+            
 
   // Enhanced results display with metrics
   const renderResults = () => {
     if (status !== 'results') return null;
 
     // Handle empty results case
-    if (results.length === 0) {
+    if (resultStats.filteredResults.length === 0) {
       return (
         <div className="text-center py-12">
           <div className="text-6xl mb-4">🔍</div>
@@ -473,9 +517,9 @@ const App: React.FC = () => {
       );
     }
 
-    const totalQRs = results.reduce((sum, file) => sum + file.qrs.length, 0);
-    const successfulFiles = results.filter(file => file.status === 'success').length;
-    const totalFiles = results.length;
+    const totalQRs = resultStats.totalQRs;
+    const successfulFiles = resultStats.successfulFiles;
+    const totalFiles = resultStats.totalFiles;
 
     return (
       <div className="space-y-6">
@@ -546,7 +590,7 @@ const App: React.FC = () => {
 
         {/* Results List */}
         <div className="space-y-4 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">
-          {results.map((result, fileIndex) => {
+          {resultStats.filteredResults.map((result, fileIndex) => {
             // Skip individual page results - they should be merged into parent PDF
             if (result.pageNumber && result.parentFileName) {
               return null;
@@ -639,7 +683,7 @@ const App: React.FC = () => {
         </div>
 
         {/* Show summary if no valid results */}
-        {results.filter(r => !(r.pageNumber && r.parentFileName)).length === 0 && (
+        {resultStats.filteredResults.length === 0 && (
           <div className="text-center py-8">
             <p className="text-slate-400">All results have been processed and merged.</p>
           </div>
