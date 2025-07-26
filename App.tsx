@@ -68,24 +68,24 @@ const App: React.FC = () => {
       switch (type) {
         case 'result':
           setResults(prev => {
-            // Check if this is a PDF page result and merge with existing PDF result
-            const existingIndex = prev.findIndex(r => 
-              r.fileName === payload.fileName || 
-              (payload.fileName.startsWith('PDF Page') && r.fileName.includes('.pdf'))
-            );
-            
-            if (existingIndex >= 0 && payload.fileName.startsWith('PDF Page')) {
-              // Merge PDF page results
-              const updated = [...prev];
-              updated[existingIndex] = {
-                ...updated[existingIndex],
-                qrs: [...updated[existingIndex].qrs, ...payload.qrs],
-                status: 'success'
-              };
-              return updated;
-            } else {
-              return [...prev, payload];
+            // Handle PDF page results differently from regular file results
+            if (payload.pageNumber && payload.parentFileName) {
+              // This is a PDF page result - merge with parent PDF file
+              const existingIndex = prev.findIndex(r => r.fileName === payload.parentFileName);
+              
+              if (existingIndex >= 0) {
+                const updated = [...prev];
+                updated[existingIndex] = {
+                  ...updated[existingIndex],
+                  qrs: [...updated[existingIndex].qrs, ...payload.qrs],
+                  status: payload.qrs.length > 0 ? 'success' : updated[existingIndex].status
+                };
+                return updated;
+              }
             }
+            
+            // Regular file result or initial PDF entry
+            return [...prev, payload];
           });
           break;
           
@@ -102,21 +102,32 @@ const App: React.FC = () => {
           const totalTime = Date.now() - startTimeRef.current;
           setElapsedTime(Math.round(totalTime / 1000));
           
-          // Calculate final metrics
-          setProcessingMetrics({
-            filesProcessed: results.length,
-            pagesProcessed: payload.totalProcessed || 0,
-            qrCodesFound: results.reduce((sum, r) => sum + r.qrs.length, 0),
-            averageProcessingTime: totalTime / Math.max(results.length, 1),
-            totalProcessingTime: totalTime
+          // Use callback to get latest results state
+          setResults(currentResults => {
+            // Calculate final metrics with current results
+            setProcessingMetrics({
+              filesProcessed: currentResults.length,
+              pagesProcessed: payload.totalProcessed || 0,
+              qrCodesFound: currentResults.reduce((sum, r) => sum + r.qrs.length, 0),
+              averageProcessingTime: totalTime / Math.max(currentResults.length, 1),
+              totalProcessingTime: totalTime
+            });
+            
+            setStatus('results');
+            setProcessingState(null);
+            return currentResults; // Return unchanged results
           });
-          
-          setStatus('results');
-          setProcessingState(null);
           break;
           
         case 'error':
           console.error('Worker error:', payload);
+          // Add error result to display
+          setResults(prev => [...prev, {
+            fileName: payload.fileName || 'Unknown File',
+            status: 'error',
+            qrs: [],
+            error: payload.message
+          }]);
           break;
           
         default:
@@ -131,7 +142,7 @@ const App: React.FC = () => {
       workerRef.current?.terminate();
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, []);
+  }, []); // Keep empty dependency array but fix the stale closure issue
 
   // Enhanced PDF processing with super advanced features
   const processEnhancedPDF = async (file: File) => {
@@ -155,7 +166,7 @@ const App: React.FC = () => {
       // Create initial PDF result entry
       const pdfResult: DecodedFileResult = {
         fileName: file.name,
-        status: 'success',
+        status: 'no_qr_found', // Start with no QR found, will be updated
         qrs: []
       };
       setResults(prev => [...prev, pdfResult]);
@@ -220,7 +231,8 @@ const App: React.FC = () => {
             workerRef.current?.postMessage({ 
               type: 'imageData', 
               imageData, 
-              pageNum 
+              pageNum,
+              parentFileName: file.name // Pass parent file name
             }, [imageData.data.buffer]);
 
             // Clean up page resources
